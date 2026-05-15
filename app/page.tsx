@@ -33,7 +33,13 @@ import {
   scoreForRange,
   tasksForDate,
 } from "@/lib/storage";
-import type { Completion, DayOrder, Habit, Task } from "@/lib/types";
+import type {
+  Completion,
+  DayItemRef,
+  DayOrder,
+  Habit,
+  Task,
+} from "@/lib/types";
 
 export default function HomePage() {
   const [hydrated, setHydrated] = useState(false);
