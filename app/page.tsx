@@ -1,65 +1,240 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Calendar from "@/components/Calendar";
+import DayList from "@/components/DayList";
+import ScoreCard from "@/components/ScoreCard";
+import {
+  eachDayISO,
+  endOfMonth,
+  endOfWeek,
+  formatLongDateFR,
+  fromISODate,
+  startOfMonth,
+  startOfWeek,
+  todayISO,
+  toISODate,
+} from "@/lib/date";
+import {
+  habitsForDate,
+  isHabitDone,
+  loadCompletions,
+  loadHabits,
+  loadOrder,
+  loadTasks,
+  moveItem,
+  newId,
+  orderedItemsForDate,
+  reorderDoneAtEnd,
+  saveCompletions,
+  saveOrder,
+  saveTasks,
+  scoreForDate,
+  scoreForRange,
+  tasksForDate,
+} from "@/lib/storage";
+import type { Completion, DayOrder, Habit, Task } from "@/lib/types";
+
+export default function HomePage() {
+  const [hydrated, setHydrated] = useState(false);
+  const [selected, setSelected] = useState<string>(() => todayISO());
+  const [habits, setHabits] = useState<Habit[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [completions, setCompletions] = useState<Completion[]>([]);
+  const [order, setOrder] = useState<DayOrder>({});
+
+  useEffect(() => {
+    setHabits(loadHabits());
+    setTasks(loadTasks());
+    setCompletions(loadCompletions());
+    setOrder(loadOrder());
+    setHydrated(true);
+  }, []);
+
+  const items = useMemo(
+    () => orderedItemsForDate(habits, tasks, order, selected),
+    [habits, tasks, order, selected],
+  );
+
+  const dayHabits = useMemo(
+    () => habitsForDate(habits, selected),
+    [habits, selected],
+  );
+  const dayTasks = useMemo(
+    () => tasksForDate(tasks, selected),
+    [tasks, selected],
+  );
+
+  const today = useMemo(() => todayISO(), []);
+
+  const dayScore = useMemo(() => {
+    const s = scoreForDate(habits, tasks, completions, selected);
+    return { done: s.done, total: s.total };
+  }, [habits, tasks, completions, selected]);
+
+  const weekScore = useMemo(() => {
+    const d = fromISODate(selected);
+    const dates = eachDayISO(
+      toISODate(startOfWeek(d)),
+      toISODate(endOfWeek(d)),
+    );
+    const s = scoreForRange(habits, tasks, completions, dates, today);
+    return { done: s.done, total: s.total };
+  }, [habits, tasks, completions, selected, today]);
+
+  const monthScore = useMemo(() => {
+    const d = fromISODate(selected);
+    const dates = eachDayISO(
+      toISODate(startOfMonth(d)),
+      toISODate(endOfMonth(d)),
+    );
+    const s = scoreForRange(habits, tasks, completions, dates, today);
+    return { done: s.done, total: s.total };
+  }, [habits, tasks, completions, selected, today]);
+
+  const getScore = useCallback(
+    (iso: string) => {
+      const s = scoreForDate(habits, tasks, completions, iso);
+      return { total: s.total, pct: s.pct };
+    },
+    [habits, tasks, completions],
+  );
+
+  function applySort(
+    nextHabits: Habit[],
+    nextTasks: Task[],
+    nextCompletions: Completion[],
+    extraRefs: DayItemRef[] = [],
+  ) {
+    const current = orderedItemsForDate(
+      nextHabits,
+      nextTasks,
+      order,
+      selected,
+    );
+    const withExtras = [...current, ...extraRefs];
+    const sorted = reorderDoneAtEnd(
+      withExtras,
+      nextTasks,
+      nextCompletions,
+      selected,
+    );
+    const nextOrder: DayOrder = { ...order, [selected]: sorted };
+    setOrder(nextOrder);
+    saveOrder(nextOrder);
+  }
+
+  function toggleHabit(habitId: string) {
+    const exists = completions.some(
+      (c) => c.habitId === habitId && c.date === selected,
+    );
+    const next = exists
+      ? completions.filter(
+          (c) => !(c.habitId === habitId && c.date === selected),
+        )
+      : [...completions, { habitId, date: selected }];
+    setCompletions(next);
+    saveCompletions(next);
+    applySort(habits, tasks, next);
+  }
+
+  function addTask(name: string) {
+    const id = newId();
+    const next: Task[] = [
+      ...tasks,
+      { id, name, date: selected, done: false },
+    ];
+    setTasks(next);
+    saveTasks(next);
+    applySort(habits, next, completions, [{ kind: "task", id }]);
+  }
+
+  function toggleTask(taskId: string) {
+    const next = tasks.map((t) =>
+      t.id === taskId ? { ...t, done: !t.done } : t,
+    );
+    setTasks(next);
+    saveTasks(next);
+    applySort(habits, next, completions);
+  }
+
+  function deleteTask(taskId: string) {
+    const next = tasks.filter((t) => t.id !== taskId);
+    setTasks(next);
+    saveTasks(next);
+    const dayRefs = order[selected];
+    if (dayRefs) {
+      const nextOrder: DayOrder = {
+        ...order,
+        [selected]: dayRefs.filter(
+          (r) => !(r.kind === "task" && r.id === taskId),
+        ),
+      };
+      setOrder(nextOrder);
+      saveOrder(nextOrder);
+    }
+  }
+
+  function move(fromIndex: number, toIndex: number) {
+    const nextOrder = moveItem(order, selected, items, fromIndex, toIndex);
+    if (nextOrder === order) return;
+    setOrder(nextOrder);
+    saveOrder(nextOrder);
+  }
+
+  if (!hydrated) {
+    return (
+      <main className="mx-auto w-full max-w-5xl p-6 text-sm text-zinc-500">
+        Chargement…
+      </main>
+    );
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <main className="mx-auto w-full max-w-5xl p-4 sm:p-6">
+      <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-3xl font-bold tracking-tight text-transparent">
+            Streak
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+          <p className="mt-0.5 text-sm capitalize text-zinc-500">
+            {formatLongDateFR(selected)}
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+        <a
+          href="/habits"
+          className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-zinc-200 backdrop-blur transition hover:bg-white/10"
+        >
+          Mes habitudes
+        </a>
+      </header>
+
+      <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
+        <div className="space-y-6 lg:order-1">
+          <section>
+            <DayList
+              items={items}
+              habits={dayHabits}
+              tasks={dayTasks}
+              isHabitDone={(id) => isHabitDone(completions, id, selected)}
+              onToggleHabit={toggleHabit}
+              onToggleTask={toggleTask}
+              onDeleteTask={deleteTask}
+              onAddTask={addTask}
+              onMove={move}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+          </section>
         </div>
-      </main>
-    </div>
+
+        <aside className="space-y-4 lg:order-2 lg:sticky lg:top-4 lg:self-start">
+          <ScoreCard day={dayScore} week={weekScore} month={monthScore} />
+          <Calendar
+            selected={selected}
+            onSelect={setSelected}
+            getScore={getScore}
+          />
+        </aside>
+      </div>
+    </main>
   );
 }
