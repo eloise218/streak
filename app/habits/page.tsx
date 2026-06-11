@@ -3,11 +3,13 @@
 import { useEffect, useState } from "react";
 import {
   describeRecurrence,
+  insertHabit,
   loadHabits,
   newId,
-  saveHabits,
+  softDeleteHabit,
 } from "@/lib/storage";
 import type { Habit, Recurrence, Weekday } from "@/lib/types";
+import SignOutButton from "@/components/SignOutButton";
 
 const WEEKDAYS: { value: Weekday; label: string }[] = [
   { value: 1, label: "Lun" },
@@ -26,16 +28,20 @@ export default function HabitsPage() {
   const [name, setName] = useState("");
   const [mode, setMode] = useState<"daily" | "weekdays">("daily");
   const [days, setDays] = useState<Weekday[]>([]);
+  const [target, setTarget] = useState(1);
 
   useEffect(() => {
-    setHabits(loadHabits());
-    setHydrated(true);
+    (async () => {
+      try {
+        const h = await loadHabits();
+        setHabits(h);
+      } catch (e) {
+        console.error("Échec du chargement des habitudes :", e);
+      } finally {
+        setHydrated(true);
+      }
+    })();
   }, []);
-
-  function persist(next: Habit[]) {
-    setHabits(next);
-    saveHabits(next);
-  }
 
   function addHabit(e: React.FormEvent) {
     e.preventDefault();
@@ -51,11 +57,14 @@ export default function HabitsPage() {
       name: trimmed,
       recurrence,
       createdAt: new Date().toISOString(),
+      target: target > 1 ? target : undefined,
     };
-    persist([...habits, habit]);
+    setHabits([...habits, habit]);
+    insertHabit(habit).catch((e) => console.error("insert habit:", e));
     setName("");
     setMode("daily");
     setDays([]);
+    setTarget(1);
   }
 
   function toggleDay(d: Weekday) {
@@ -66,9 +75,8 @@ export default function HabitsPage() {
 
   function deleteHabit(id: string) {
     const now = new Date().toISOString();
-    persist(
-      habits.map((h) => (h.id === id ? { ...h, deletedAt: now } : h)),
-    );
+    setHabits(habits.map((h) => (h.id === id ? { ...h, deletedAt: now } : h)));
+    softDeleteHabit(id).catch((e) => console.error("delete habit:", e));
   }
 
   const visibleHabits = habits.filter((h) => !h.deletedAt);
@@ -83,7 +91,7 @@ export default function HabitsPage() {
 
   return (
     <main className="mx-auto w-full max-w-3xl p-4 sm:p-6">
-      <header className="mb-8 flex items-center justify-between">
+      <header className="mb-8 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-3xl font-bold tracking-tight text-transparent">
             Mes habitudes
@@ -92,12 +100,15 @@ export default function HabitsPage() {
             Définis tes habitudes et leur récurrence.
           </p>
         </div>
-        <a
-          href="/"
-          className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-zinc-200 backdrop-blur transition hover:bg-white/10"
-        >
-          ← Retour
-        </a>
+        <div className="flex items-center gap-2">
+          <a
+            href="/"
+            className="whitespace-nowrap rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-zinc-200 backdrop-blur transition hover:bg-white/10"
+          >
+            ← Retour
+          </a>
+          <SignOutButton />
+        </div>
       </header>
 
       <form
@@ -171,6 +182,44 @@ export default function HabitsPage() {
           )}
         </div>
 
+        <div>
+          <label className="mb-1.5 block text-[11px] font-medium uppercase tracking-widest text-zinc-500">
+            Combien de fois par jour ?
+          </label>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setTarget((t) => Math.max(1, t - 1))}
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-white/5 bg-black/40 text-lg text-zinc-300 transition hover:border-indigo-500/60 hover:text-white"
+              aria-label="Diminuer"
+            >
+              −
+            </button>
+            <input
+              type="number"
+              min={1}
+              max={99}
+              value={target}
+              onChange={(e) => {
+                const n = Number.parseInt(e.target.value, 10);
+                setTarget(Number.isFinite(n) && n >= 1 ? Math.min(99, n) : 1);
+              }}
+              className="w-16 rounded-2xl border border-white/5 bg-black/40 px-3 py-2 text-center text-sm text-zinc-100 outline-none transition focus:border-indigo-500/60 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            />
+            <button
+              type="button"
+              onClick={() => setTarget((t) => Math.min(99, t + 1))}
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-white/5 bg-black/40 text-lg text-zinc-300 transition hover:border-indigo-500/60 hover:text-white"
+              aria-label="Augmenter"
+            >
+              +
+            </button>
+            <span className="text-xs text-zinc-500">
+              {target === 1 ? "1 fois" : `${target} fois`}
+            </span>
+          </div>
+        </div>
+
         <button
           type="submit"
           className="rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-indigo-500/20 transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
@@ -198,7 +247,14 @@ export default function HabitsPage() {
               className="flex items-center gap-3 rounded-2xl border border-white/5 bg-zinc-900/60 p-4 transition hover:border-white/10"
             >
               <div className="flex-1">
-                <div className="font-medium text-zinc-100">{h.name}</div>
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-zinc-100">{h.name}</span>
+                  {h.target && h.target > 1 && (
+                    <span className="rounded-full border border-indigo-400/30 bg-indigo-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-indigo-300">
+                      ×{h.target}
+                    </span>
+                  )}
+                </div>
                 <div className="mt-0.5 text-xs text-zinc-500">
                   {describeRecurrence(h.recurrence)}
                 </div>

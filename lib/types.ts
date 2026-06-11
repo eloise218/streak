@@ -10,6 +10,7 @@ export type Habit = {
   recurrence: Recurrence;
   createdAt: string;
   deletedAt?: string;
+  target?: number;
 };
 
 export type Task = {
@@ -17,11 +18,14 @@ export type Task = {
   name: string;
   date: string;
   done: boolean;
+  target?: number;
+  count?: number;
 };
 
 export type Completion = {
   habitId: string;
   date: string;
+  count?: number;
 };
 
 export type DayItemRef =

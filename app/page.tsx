@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Calendar from "@/components/Calendar";
 import DayList from "@/components/DayList";
 import ScoreCard from "@/components/ScoreCard";
+import SignOutButton from "@/components/SignOutButton";
 import {
   eachDayISO,
   endOfMonth,
@@ -16,8 +17,12 @@ import {
   toISODate,
 } from "@/lib/date";
 import {
+  deleteCompletion,
+  deleteTaskRow,
   habitsForDate,
-  isHabitDone,
+  incrementHabit,
+  incrementTask,
+  insertTask,
   loadCompletions,
   loadHabits,
   loadOrder,
@@ -26,12 +31,12 @@ import {
   newId,
   orderedItemsForDate,
   reorderDoneAtEnd,
-  saveCompletions,
-  saveOrder,
-  saveTasks,
+  saveOrderForDate,
   scoreForDate,
   scoreForRange,
   tasksForDate,
+  updateTask,
+  upsertCompletion,
 } from "@/lib/storage";
 import type {
   Completion,
@@ -50,11 +55,24 @@ export default function HomePage() {
   const [order, setOrder] = useState<DayOrder>({});
 
   useEffect(() => {
-    setHabits(loadHabits());
-    setTasks(loadTasks());
-    setCompletions(loadCompletions());
-    setOrder(loadOrder());
-    setHydrated(true);
+    (async () => {
+      try {
+        const [h, t, c, o] = await Promise.all([
+          loadHabits(),
+          loadTasks(),
+          loadCompletions(),
+          loadOrder(),
+        ]);
+        setHabits(h);
+        setTasks(t);
+        setCompletions(c);
+        setOrder(o);
+      } catch (e) {
+        console.error("Échec du chargement des données :", e);
+      } finally {
+        setHydrated(true);
+      }
+    })();
   }, []);
 
   const items = useMemo(
@@ -106,6 +124,12 @@ export default function HomePage() {
     [habits, tasks, completions],
   );
 
+  function persistOrder(nextRefs: DayItemRef[]) {
+    saveOrderForDate(selected, nextRefs).catch((e) =>
+      console.error("save order:", e),
+    );
+  }
+
   function applySort(
     nextHabits: Habit[],
     nextTasks: Task[],
@@ -121,63 +145,88 @@ export default function HomePage() {
     const withExtras = [...current, ...extraRefs];
     const sorted = reorderDoneAtEnd(
       withExtras,
+      nextHabits,
       nextTasks,
       nextCompletions,
       selected,
     );
     const nextOrder: DayOrder = { ...order, [selected]: sorted };
     setOrder(nextOrder);
-    saveOrder(nextOrder);
+    persistOrder(sorted);
   }
 
-  function toggleHabit(habitId: string) {
-    const exists = completions.some(
-      (c) => c.habitId === habitId && c.date === selected,
-    );
-    const next = exists
-      ? completions.filter(
-          (c) => !(c.habitId === habitId && c.date === selected),
-        )
-      : [...completions, { habitId, date: selected }];
+  function bumpHabit(habitId: string) {
+    const habit = habits.find((h) => h.id === habitId);
+    if (!habit) return;
+    const next = incrementHabit(completions, habit, selected);
     setCompletions(next);
-    saveCompletions(next);
+    const updated = next.find(
+      (c) => c.habitId === habit.id && c.date === selected,
+    );
+    if (updated) {
+      upsertCompletion(updated).catch((e) =>
+        console.error("upsert completion:", e),
+      );
+    } else {
+      deleteCompletion(habit.id, selected).catch((e) =>
+        console.error("delete completion:", e),
+      );
+    }
     applySort(habits, tasks, next);
   }
 
-  function addTask(name: string) {
+  function addTask(name: string, target = 1) {
     const id = newId();
-    const next: Task[] = [
-      ...tasks,
-      { id, name, date: selected, done: false },
-    ];
+    const newTask: Task = {
+      id,
+      name,
+      date: selected,
+      done: false,
+      target: target > 1 ? target : undefined,
+      count: 0,
+    };
+    const next: Task[] = [...tasks, newTask];
     setTasks(next);
-    saveTasks(next);
-    applySort(habits, next, completions, [{ kind: "task", id }]);
+    insertTask(newTask).catch((e) => console.error("insert task:", e));
+
+    const newRef: DayItemRef = { kind: "task", id };
+    const existing = orderedItemsForDate(habits, next, order, selected).filter(
+      (r) => !(r.kind === "task" && r.id === id),
+    );
+    const sorted = reorderDoneAtEnd(
+      [newRef, ...existing],
+      habits,
+      next,
+      completions,
+      selected,
+    );
+    const nextOrder: DayOrder = { ...order, [selected]: sorted };
+    setOrder(nextOrder);
+    persistOrder(sorted);
   }
 
-  function toggleTask(taskId: string) {
-    const next = tasks.map((t) =>
-      t.id === taskId ? { ...t, done: !t.done } : t,
-    );
+  function bumpTask(taskId: string) {
+    const next = incrementTask(tasks, taskId);
     setTasks(next);
-    saveTasks(next);
+    const updated = next.find((t) => t.id === taskId);
+    if (updated) {
+      updateTask(updated).catch((e) => console.error("update task:", e));
+    }
     applySort(habits, next, completions);
   }
 
   function deleteTask(taskId: string) {
     const next = tasks.filter((t) => t.id !== taskId);
     setTasks(next);
-    saveTasks(next);
+    deleteTaskRow(taskId).catch((e) => console.error("delete task:", e));
     const dayRefs = order[selected];
     if (dayRefs) {
-      const nextOrder: DayOrder = {
-        ...order,
-        [selected]: dayRefs.filter(
-          (r) => !(r.kind === "task" && r.id === taskId),
-        ),
-      };
+      const filtered = dayRefs.filter(
+        (r) => !(r.kind === "task" && r.id === taskId),
+      );
+      const nextOrder: DayOrder = { ...order, [selected]: filtered };
       setOrder(nextOrder);
-      saveOrder(nextOrder);
+      persistOrder(filtered);
     }
   }
 
@@ -185,7 +234,8 @@ export default function HomePage() {
     const nextOrder = moveItem(order, selected, items, fromIndex, toIndex);
     if (nextOrder === order) return;
     setOrder(nextOrder);
-    saveOrder(nextOrder);
+    const nextRefs = nextOrder[selected];
+    if (nextRefs) persistOrder(nextRefs);
   }
 
   if (!hydrated) {
@@ -207,12 +257,15 @@ export default function HomePage() {
             {formatLongDateFR(selected)}
           </p>
         </div>
-        <a
-          href="/habits"
-          className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-zinc-200 backdrop-blur transition hover:bg-white/10"
-        >
-          Mes habitudes
-        </a>
+        <div className="flex items-center gap-2">
+          <a
+            href="/habits"
+            className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm text-zinc-200 backdrop-blur transition hover:bg-white/10"
+          >
+            Mes habitudes
+          </a>
+          <SignOutButton />
+        </div>
       </header>
 
       <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
@@ -222,9 +275,10 @@ export default function HomePage() {
               items={items}
               habits={dayHabits}
               tasks={dayTasks}
-              isHabitDone={(id) => isHabitDone(completions, id, selected)}
-              onToggleHabit={toggleHabit}
-              onToggleTask={toggleTask}
+              completions={completions}
+              date={selected}
+              onIncrementHabit={bumpHabit}
+              onIncrementTask={bumpTask}
               onDeleteTask={deleteTask}
               onAddTask={addTask}
               onMove={move}

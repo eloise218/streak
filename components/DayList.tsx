@@ -1,17 +1,23 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { DayItemRef, Habit, Task } from "@/lib/types";
+import type { Completion, DayItemRef, Habit, Task } from "@/lib/types";
+import {
+  getHabitCount,
+  getTarget,
+  getTaskCount,
+} from "@/lib/storage";
 
 type Props = {
   items: DayItemRef[];
   habits: Habit[];
   tasks: Task[];
-  isHabitDone: (habitId: string) => boolean;
-  onToggleHabit: (habitId: string) => void;
-  onToggleTask: (taskId: string) => void;
+  completions: Completion[];
+  date: string;
+  onIncrementHabit: (habitId: string) => void;
+  onIncrementTask: (taskId: string) => void;
   onDeleteTask: (taskId: string) => void;
-  onAddTask: (name: string) => void;
+  onAddTask: (name: string, target?: number) => void;
   onMove: (fromIndex: number, toIndex: number) => void;
 };
 
@@ -26,14 +32,16 @@ export default function DayList({
   items,
   habits,
   tasks,
-  isHabitDone,
-  onToggleHabit,
-  onToggleTask,
+  completions,
+  date,
+  onIncrementHabit,
+  onIncrementTask,
   onDeleteTask,
   onAddTask,
   onMove,
 }: Props) {
   const [draft, setDraft] = useState("");
+  const [draftTarget, setDraftTarget] = useState(1);
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
 
@@ -232,8 +240,9 @@ export default function DayList({
     e.preventDefault();
     const name = draft.trim();
     if (!name) return;
-    onAddTask(name);
+    onAddTask(name, draftTarget);
     setDraft("");
+    setDraftTarget(1);
   }
 
   function setLiRef(key: string, el: HTMLLIElement | null) {
@@ -252,8 +261,28 @@ export default function DayList({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           placeholder="Ajouter une tâche…"
-          className="flex-1 rounded-2xl border border-white/5 bg-zinc-900/60 px-4 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-indigo-500/60 focus:bg-zinc-900"
+          className="min-w-0 flex-1 rounded-2xl border border-white/5 bg-zinc-900/60 px-4 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 outline-none transition focus:border-indigo-500/60 focus:bg-zinc-900"
         />
+        <label
+          className="flex items-center gap-1 rounded-2xl border border-white/5 bg-zinc-900/60 px-2.5 py-2.5 text-xs text-zinc-400"
+          title="Combien de fois par jour ?"
+        >
+          <span aria-hidden>×</span>
+          <input
+            type="number"
+            min={1}
+            max={99}
+            value={draftTarget}
+            onChange={(e) => {
+              const n = Number.parseInt(e.target.value, 10);
+              setDraftTarget(Number.isFinite(n) && n >= 1 ? Math.min(99, n) : 1);
+            }}
+            onFocus={(e) => e.currentTarget.select()}
+            onClick={(e) => e.currentTarget.select()}
+            aria-label="Nombre de fois à faire"
+            className="w-10 bg-transparent text-center text-sm text-zinc-100 outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+          />
+        </label>
         <button
           type="submit"
           className="rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-indigo-500/20 transition hover:opacity-90"
@@ -277,9 +306,14 @@ export default function DayList({
             if (isHabit && !habit) return null;
             if (!isHabit && !task) return null;
 
-            const done = isHabit
-              ? isHabitDone(habit!.id)
-              : (task!.done as boolean);
+            const target = getTarget(isHabit ? habit! : task!);
+            const count = isHabit
+              ? getHabitCount(completions, habit!.id, date)
+              : getTaskCount(task!);
+            const clamped = Math.min(count, target);
+            const done = clamped >= target;
+            const hasTarget = target > 1;
+            const progressPct = target > 0 ? (clamped / target) * 100 : 0;
             const name = isHabit ? habit!.name : task!.name;
 
             const baseBorder = done
@@ -326,17 +360,52 @@ export default function DayList({
                   <button
                     type="button"
                     onClick={() =>
-                      isHabit ? onToggleHabit(habit!.id) : onToggleTask(task!.id)
+                      isHabit
+                        ? onIncrementHabit(habit!.id)
+                        : onIncrementTask(task!.id)
                     }
                     className={[
-                      "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 text-xs transition",
+                      "relative flex shrink-0 items-center justify-center rounded-full text-[10px] font-semibold transition",
+                      hasTarget ? "h-7 w-7" : "h-6 w-6 border-2 text-xs",
                       done
-                        ? "border-emerald-400 bg-emerald-500 text-white"
-                        : "border-zinc-600 hover:border-zinc-400",
+                        ? hasTarget
+                          ? "bg-emerald-500 text-white"
+                          : "border-emerald-400 bg-emerald-500 text-white"
+                        : hasTarget
+                          ? "bg-zinc-800 text-zinc-200"
+                          : "border-zinc-600 hover:border-zinc-400",
                     ].join(" ")}
-                    aria-label={done ? "Marquer non faite" : "Marquer faite"}
+                    style={
+                      hasTarget && !done
+                        ? {
+                            backgroundImage: `conic-gradient(rgb(129 140 248) ${progressPct}%, rgb(63 63 70) 0)`,
+                          }
+                        : undefined
+                    }
+                    aria-label={
+                      hasTarget
+                        ? `Fait ${clamped} sur ${target}`
+                        : done
+                          ? "Marquer non faite"
+                          : "Marquer faite"
+                    }
                   >
-                    {done ? "✓" : ""}
+                    {hasTarget ? (
+                      <span className="flex h-[calc(100%-4px)] w-[calc(100%-4px)] items-center justify-center rounded-full bg-zinc-900 text-zinc-100 leading-none">
+                        {done ? (
+                          <span className="text-emerald-400">✓</span>
+                        ) : (
+                          <span>
+                            {clamped}
+                            <span className="text-zinc-500">/{target}</span>
+                          </span>
+                        )}
+                      </span>
+                    ) : done ? (
+                      "✓"
+                    ) : (
+                      ""
+                    )}
                   </button>
                   <span
                     className={[
