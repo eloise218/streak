@@ -19,6 +19,9 @@ import {
 import {
   deleteCompletion,
   deleteTaskRow,
+  getHabitCount,
+  getTarget,
+  getTaskCount,
   habitsForDate,
   incrementHabit,
   incrementTask,
@@ -45,6 +48,9 @@ import type {
   Habit,
   Task,
 } from "@/lib/types";
+
+// Let the completion flash play in place before the item slides to the bottom.
+const REORDER_DELAY_MS = 700;
 
 export default function HomePage() {
   const [hydrated, setHydrated] = useState(false);
@@ -90,6 +96,19 @@ export default function HomePage() {
   );
 
   const today = useMemo(() => todayISO(), []);
+  const isToday = selected === today;
+
+  const relativeLabel = useMemo(() => {
+    const offset = Math.round(
+      (fromISODate(selected).getTime() - fromISODate(today).getTime()) /
+        86400000,
+    );
+    if (offset === 0) return "Aujourd'hui";
+    if (offset === 1) return "Demain";
+    if (offset === -1) return "Hier";
+    if (offset > 1) return `Dans ${offset} jours`;
+    return `Il y a ${-offset} jours`;
+  }, [selected, today]);
 
   const dayScore = useMemo(() => {
     const s = scoreForDate(habits, tasks, completions, selected);
@@ -158,6 +177,8 @@ export default function HomePage() {
   function bumpHabit(habitId: string) {
     const habit = habits.find((h) => h.id === habitId);
     if (!habit) return;
+    const target = getTarget(habit);
+    const wasDone = getHabitCount(completions, habit.id, selected) >= target;
     const next = incrementHabit(completions, habit, selected);
     setCompletions(next);
     const updated = next.find(
@@ -172,7 +193,13 @@ export default function HomePage() {
         console.error("delete completion:", e),
       );
     }
-    applySort(habits, tasks, next);
+    const becameDone =
+      !wasDone && getHabitCount(next, habit.id, selected) >= target;
+    if (becameDone) {
+      window.setTimeout(() => applySort(habits, tasks, next), REORDER_DELAY_MS);
+    } else {
+      applySort(habits, tasks, next);
+    }
   }
 
   function addTask(name: string, target = 1) {
@@ -206,13 +233,24 @@ export default function HomePage() {
   }
 
   function bumpTask(taskId: string) {
+    const task = tasks.find((t) => t.id === taskId);
+    const wasDone = task ? getTaskCount(task) >= getTarget(task) : false;
     const next = incrementTask(tasks, taskId);
     setTasks(next);
     const updated = next.find((t) => t.id === taskId);
     if (updated) {
       updateTask(updated).catch((e) => console.error("update task:", e));
     }
-    applySort(habits, next, completions);
+    const becameDone =
+      !!updated && !wasDone && getTaskCount(updated) >= getTarget(updated);
+    if (becameDone) {
+      window.setTimeout(
+        () => applySort(habits, next, completions),
+        REORDER_DELAY_MS,
+      );
+    } else {
+      applySort(habits, next, completions);
+    }
   }
 
   function deleteTask(taskId: string) {
@@ -253,9 +291,33 @@ export default function HomePage() {
           <h1 className="bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-3xl font-bold tracking-tight text-transparent">
             Streak
           </h1>
-          <p className="mt-0.5 text-sm capitalize text-zinc-500">
-            {formatLongDateFR(selected)}
-          </p>
+          {isToday ? (
+            <p className="mt-0.5 text-sm capitalize text-zinc-500">
+              {formatLongDateFR(selected)}
+            </p>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setSelected(today)}
+              aria-label="Revenir à aujourd'hui"
+              className="group mt-1.5 flex items-center gap-2 rounded-full border border-amber-400/40 bg-amber-500/10 py-1 pl-2.5 pr-2 text-xs text-amber-200 transition hover:bg-amber-500/20"
+            >
+              <span className="relative flex h-2 w-2 shrink-0">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400/70" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-400" />
+              </span>
+              <span className="capitalize">
+                {relativeLabel}
+                <span className="hidden text-amber-200/60 sm:inline">
+                  {" · "}
+                  {formatLongDateFR(selected)}
+                </span>
+              </span>
+              <span className="ml-0.5 rounded-full bg-amber-400/20 px-2 py-0.5 font-medium text-amber-100 transition group-hover:bg-amber-400/30">
+                ↩ Aujourd&apos;hui
+              </span>
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <a
@@ -295,6 +357,20 @@ export default function HomePage() {
           />
         </aside>
       </div>
+
+      {!isToday && (
+        <button
+          type="button"
+          onClick={() => setSelected(today)}
+          className="fixed bottom-5 right-5 z-20 flex items-center gap-2 rounded-full border border-amber-300/40 bg-amber-500/95 px-4 py-3 text-sm font-semibold text-amber-950 shadow-xl shadow-amber-900/40 backdrop-blur transition hover:bg-amber-400 active:scale-95 sm:bottom-6 sm:right-6"
+          style={{
+            paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))",
+          }}
+        >
+          <span aria-hidden>↩</span>
+          Aujourd&apos;hui
+        </button>
+      )}
     </main>
   );
 }

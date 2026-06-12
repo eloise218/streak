@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   describeRecurrence,
   insertHabit,
@@ -29,6 +29,16 @@ export default function HabitsPage() {
   const [mode, setMode] = useState<"daily" | "weekdays">("daily");
   const [days, setDays] = useState<Weekday[]>([]);
   const [target, setTarget] = useState(1);
+  const [enterIds, setEnterIds] = useState<Set<string>>(() => new Set());
+  const [popAdd, setPopAdd] = useState(false);
+  const enterTimersRef = useRef<Map<string, number>>(new Map());
+
+  useEffect(() => {
+    const timers = enterTimersRef.current;
+    return () => {
+      for (const id of timers.values()) window.clearTimeout(id);
+    };
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -61,6 +71,18 @@ export default function HabitsPage() {
     };
     setHabits([...habits, habit]);
     insertHabit(habit).catch((e) => console.error("insert habit:", e));
+    setEnterIds((s) => new Set(s).add(habit.id));
+    const enteringId = habit.id;
+    const timer = window.setTimeout(() => {
+      enterTimersRef.current.delete(enteringId);
+      setEnterIds((s) => {
+        const next = new Set(s);
+        next.delete(enteringId);
+        return next;
+      });
+    }, 450);
+    enterTimersRef.current.set(enteringId, timer);
+    setPopAdd(true);
     setName("");
     setMode("daily");
     setDays([]);
@@ -222,7 +244,11 @@ export default function HabitsPage() {
 
         <button
           type="submit"
-          className="rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-indigo-500/20 transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          onAnimationEnd={() => setPopAdd(false)}
+          className={[
+            "rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-indigo-500/20 transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40",
+            popAdd ? "btn-pop" : "",
+          ].join(" ")}
           disabled={
             !name.trim() || (mode === "weekdays" && days.length === 0)
           }
@@ -244,7 +270,10 @@ export default function HabitsPage() {
           {visibleHabits.map((h) => (
             <li
               key={h.id}
-              className="flex items-center gap-3 rounded-2xl border border-white/5 bg-zinc-900/60 p-4 transition hover:border-white/10"
+              className={[
+                "flex items-center gap-3 rounded-2xl border border-white/5 bg-zinc-900/60 p-4 transition hover:border-white/10",
+                enterIds.has(h.id) ? "item-enter" : "",
+              ].join(" ")}
             >
               <div className="flex-1">
                 <div className="flex items-center gap-2">

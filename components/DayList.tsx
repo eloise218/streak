@@ -21,9 +21,6 @@ type Props = {
   onMove: (fromIndex: number, toIndex: number) => void;
 };
 
-const LONG_PRESS_MS = 350;
-const MOVE_CANCEL_PX = 12;
-
 function refKey(r: DayItemRef) {
   return `${r.kind}:${r.id}`;
 }
@@ -44,14 +41,19 @@ export default function DayList({
   const [draftTarget, setDraftTarget] = useState(1);
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
+  const [flashKeys, setFlashKeys] = useState<Set<string>>(() => new Set());
+  const [enterKeys, setEnterKeys] = useState<Set<string>>(() => new Set());
+  const [popAdd, setPopAdd] = useState(false);
 
-  const pressTimerRef = useRef<number | null>(null);
-  const startPosRef = useRef<{ x: number; y: number } | null>(null);
   const liRefs = useRef<Map<string, HTMLLIElement>>(new Map());
   const dragKeyRef = useRef<string | null>(null);
   const overIndexRef = useRef<number | null>(null);
   const virtualYRef = useRef<number>(0);
   const slotMidsRef = useRef<number[]>([]);
+  const prevDoneRef = useRef<Map<string, boolean>>(new Map());
+  const flashTimersRef = useRef<Map<string, number>>(new Map());
+  const prevKeysRef = useRef<Set<string> | null>(null);
+  const enterTimersRef = useRef<Map<string, number>>(new Map());
 
   function captureSlotMids() {
     const mids: number[] = [];
@@ -74,14 +76,6 @@ export default function DayList({
     overIndexRef.current = overIndex;
   }, [overIndex]);
 
-  useEffect(() => {
-    return () => {
-      if (pressTimerRef.current !== null) {
-        window.clearTimeout(pressTimerRef.current);
-      }
-    };
-  }, []);
-
   const fromIndex = useMemo(() => {
     if (!dragKey) return -1;
     return items.findIndex((r) => refKey(r) === dragKey);
@@ -96,6 +90,110 @@ export default function DayList({
     arr.splice(overIndex, 0, moved);
     return arr;
   }, [items, fromIndex, overIndex]);
+
+  // Completion state per item, used to detect the moment something becomes done.
+  const doneByKey = useMemo(() => {
+    const hb = new Map(habits.map((h) => [h.id, h]));
+    const tb = new Map(tasks.map((t) => [t.id, t]));
+    const m = new Map<string, boolean>();
+    for (const ref of items) {
+      if (ref.kind === "habit") {
+        const h = hb.get(ref.id);
+        if (!h) continue;
+        const target = getTarget(h);
+        const count = getHabitCount(completions, h.id, date);
+        m.set(refKey(ref), Math.min(count, target) >= target);
+      } else {
+        const t = tb.get(ref.id);
+        if (!t) continue;
+        const target = getTarget(t);
+        const count = getTaskCount(t);
+        m.set(refKey(ref), Math.min(count, target) >= target);
+      }
+    }
+    return m;
+  }, [items, habits, tasks, completions, date]);
+
+  // Reset the baseline when switching days so we don't flash items that merely
+  // happen to be done on another date.
+  useEffect(() => {
+    prevDoneRef.current = new Map(doneByKey);
+    prevKeysRef.current = new Set(items.map(refKey));
+    setFlashKeys(new Set());
+    setEnterKeys(new Set());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date]);
+
+  // Animate items that are newly added to the list (not present last render).
+  useEffect(() => {
+    const prev = prevKeysRef.current;
+    const currentKeys = items.map(refKey);
+    prevKeysRef.current = new Set(currentKeys);
+    if (prev === null) return;
+    const added = currentKeys.filter((k) => !prev.has(k));
+    if (added.length === 0) return;
+
+    setEnterKeys((s) => {
+      const next = new Set(s);
+      for (const k of added) next.add(k);
+      return next;
+    });
+
+    for (const k of added) {
+      const existing = enterTimersRef.current.get(k);
+      if (existing) window.clearTimeout(existing);
+      const id = window.setTimeout(() => {
+        enterTimersRef.current.delete(k);
+        setEnterKeys((s) => {
+          const next = new Set(s);
+          next.delete(k);
+          return next;
+        });
+      }, 450);
+      enterTimersRef.current.set(k, id);
+    }
+  }, [items]);
+
+  // Briefly highlight an item the instant it becomes complete, so the eye can
+  // follow it as it jumps to the bottom of the list.
+  useEffect(() => {
+    const prev = prevDoneRef.current;
+    const newlyDone: string[] = [];
+    for (const [key, done] of doneByKey) {
+      if (done && prev.get(key) === false) newlyDone.push(key);
+    }
+    prevDoneRef.current = new Map(doneByKey);
+    if (newlyDone.length === 0) return;
+
+    setFlashKeys((s) => {
+      const next = new Set(s);
+      for (const k of newlyDone) next.add(k);
+      return next;
+    });
+
+    for (const k of newlyDone) {
+      const existing = flashTimersRef.current.get(k);
+      if (existing) window.clearTimeout(existing);
+      const id = window.setTimeout(() => {
+        flashTimersRef.current.delete(k);
+        setFlashKeys((s) => {
+          const next = new Set(s);
+          next.delete(k);
+          return next;
+        });
+      }, 700);
+      flashTimersRef.current.set(k, id);
+    }
+  }, [doneByKey]);
+
+  useEffect(() => {
+    const flashTimers = flashTimersRef.current;
+    const enterTimers = enterTimersRef.current;
+    return () => {
+      for (const id of flashTimers.values()) window.clearTimeout(id);
+      for (const id of enterTimers.values()) window.clearTimeout(id);
+    };
+  }, []);
 
   useEffect(() => {
     if (dragKey === null) return;
@@ -173,42 +271,6 @@ export default function DayList({
     };
   }, [dragKey, items, onMove]);
 
-  function cancelPress() {
-    if (pressTimerRef.current !== null) {
-      window.clearTimeout(pressTimerRef.current);
-      pressTimerRef.current = null;
-    }
-    startPosRef.current = null;
-  }
-
-  function handlePointerDown(
-    key: string,
-    index: number,
-    e: React.PointerEvent<HTMLLIElement>,
-  ) {
-    if (e.pointerType === "mouse" && e.button !== 0) return;
-    const target = e.target as HTMLElement | null;
-    if (target && target.closest("button, input, a")) return;
-
-    startPosRef.current = { x: e.clientX, y: e.clientY };
-    cancelPress();
-
-    pressTimerRef.current = window.setTimeout(() => {
-      pressTimerRef.current = null;
-      virtualYRef.current = startPosRef.current?.y ?? 0;
-      captureSlotMids();
-      setDragKey(key);
-      setOverIndex(index);
-      if (typeof navigator !== "undefined" && "vibrate" in navigator) {
-        try {
-          navigator.vibrate(35);
-        } catch {
-          // ignore
-        }
-      }
-    }, LONG_PRESS_MS);
-  }
-
   function handleHandlePointerDown(
     key: string,
     index: number,
@@ -216,24 +278,17 @@ export default function DayList({
   ) {
     if (e.pointerType === "mouse" && e.button !== 0) return;
     e.stopPropagation();
-    cancelPress();
     virtualYRef.current = e.clientY;
     captureSlotMids();
     setDragKey(key);
     setOverIndex(index);
-  }
-
-  function handlePointerMove(e: React.PointerEvent<HTMLLIElement>) {
-    if (pressTimerRef.current === null) return;
-    const start = startPosRef.current;
-    if (!start) return;
-    const dx = e.clientX - start.x;
-    const dy = e.clientY - start.y;
-    if (Math.hypot(dx, dy) > MOVE_CANCEL_PX) cancelPress();
-  }
-
-  function handlePointerUp() {
-    if (pressTimerRef.current !== null) cancelPress();
+    if (typeof navigator !== "undefined" && "vibrate" in navigator) {
+      try {
+        navigator.vibrate(35);
+      } catch {
+        // ignore
+      }
+    }
   }
 
   function submit(e: React.FormEvent) {
@@ -243,6 +298,7 @@ export default function DayList({
     onAddTask(name, draftTarget);
     setDraft("");
     setDraftTarget(1);
+    setPopAdd(true);
   }
 
   function setLiRef(key: string, el: HTMLLIElement | null) {
@@ -285,7 +341,11 @@ export default function DayList({
         </label>
         <button
           type="submit"
-          className="rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-indigo-500/20 transition hover:opacity-90"
+          onAnimationEnd={() => setPopAdd(false)}
+          className={[
+            "rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 px-4 py-2.5 text-sm font-medium text-white shadow-lg shadow-indigo-500/20 transition hover:opacity-90",
+            popAdd ? "btn-pop" : "",
+          ].join(" ")}
         >
           Ajouter
         </button>
@@ -300,6 +360,8 @@ export default function DayList({
           {displayItems.map((ref, index) => {
             const key = refKey(ref);
             const isDragging = key === dragKey;
+            const flashing = flashKeys.has(key);
+            const entering = enterKeys.has(key);
             const isHabit = ref.kind === "habit";
             const habit = isHabit ? habitById.get(ref.id) : undefined;
             const task = !isHabit ? taskById.get(ref.id) : undefined;
@@ -326,12 +388,9 @@ export default function DayList({
               <li
                 key={key}
                 ref={(el) => setLiRef(key, el)}
-                onPointerDown={(e) => handlePointerDown(key, index, e)}
-                onPointerMove={handlePointerMove}
-                onPointerUp={handlePointerUp}
                 style={{
                   touchAction: isDragMode ? "none" : "auto",
-                  cursor: isDragging ? "grabbing" : "grab",
+                  cursor: isDragging ? "grabbing" : "default",
                   transform: isDragging ? "scale(1.04)" : undefined,
                   zIndex: isDragging ? 10 : undefined,
                   position: "relative",
@@ -345,6 +404,8 @@ export default function DayList({
                 className={[
                   "group flex items-stretch overflow-hidden rounded-2xl border",
                   baseBorder,
+                  flashing ? "task-complete-flash" : "",
+                  entering ? "item-enter" : "",
                 ].join(" ")}
               >
                 <span
@@ -374,6 +435,7 @@ export default function DayList({
                         : hasTarget
                           ? "bg-zinc-800 text-zinc-200"
                           : "border-zinc-600 hover:border-zinc-400",
+                      flashing ? "task-complete-check" : "",
                     ].join(" ")}
                     style={
                       hasTarget && !done
@@ -461,7 +523,7 @@ export default function DayList({
 
       {displayItems.length > 0 && (
         <p className="mt-3 text-center text-[11px] text-zinc-600">
-          Glisser la poignée ⋮⋮ ou maintenir cliqué un instant pour réordonner
+          Glisser la poignée ⋮⋮ à droite pour réordonner
         </p>
       )}
     </div>
