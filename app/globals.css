@@ -14,3 +14,8 @@ body {
   background-color: #000000;
   color: #ededed;
 }
+
+/* Keep content centered on mobile: never allow sideways scroll/shift. */
+html {
+  overflow-x: hidden;
+}
