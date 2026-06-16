@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Calendar from "@/components/Calendar";
 import DayList from "@/components/DayList";
 import ScoreCard from "@/components/ScoreCard";
@@ -54,6 +54,7 @@ const REORDER_DELAY_MS = 700;
 
 export default function HomePage() {
   const [hydrated, setHydrated] = useState(false);
+  const [today, setToday] = useState<string>(() => todayISO());
   const [selected, setSelected] = useState<string>(() => todayISO());
   const [habits, setHabits] = useState<Habit[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -95,7 +96,35 @@ export default function HomePage() {
     [tasks, selected],
   );
 
-  const today = useMemo(() => todayISO(), []);
+  // `today` doit suivre le jour réel : sans cela, une PWA laissée ouverte
+  // (ou mise en arrière-plan) reste bloquée sur la date du jour où elle a été
+  // chargée. On le resynchronise au retour au premier plan et chaque minute.
+  const todayRef = useRef(today);
+  todayRef.current = today;
+  useEffect(() => {
+    function syncToday() {
+      const t = todayISO();
+      if (t === todayRef.current) return;
+      const prev = todayRef.current;
+      todayRef.current = t;
+      setToday(t);
+      // Si l'utilisateur regardait « aujourd'hui », le faire suivre le nouveau jour.
+      setSelected((sel) => (sel === prev ? t : sel));
+    }
+    syncToday();
+    const onVisible = () => {
+      if (!document.hidden) syncToday();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", syncToday);
+    const interval = window.setInterval(syncToday, 60_000);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", syncToday);
+      window.clearInterval(interval);
+    };
+  }, []);
+
   const isToday = selected === today;
 
   const relativeLabel = useMemo(() => {
